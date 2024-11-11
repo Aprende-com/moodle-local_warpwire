@@ -1,0 +1,71 @@
+---  # 2024 09 10
+
+name: "Single Plugin Pipeline NONPROD Dispatch"
+on:
+  workflow_dispatch:
+  push:
+    paths-ignore:
+      - '.github/**'
+    branches:
+      - dev
+      - qa
+
+env:
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}  # required
+
+jobs:
+  branch_trigger:
+    if: ${{ !contains(github.event.head_commit.message, '[skip ci]') }}
+    runs-on: ubuntu-latest
+    outputs:
+      SHA_SHORT: ${{ steps.prepare_environment.outputs.SHA_SHORT }}
+      ISSUE_ID: ${{ steps.prepare_environment.outputs.ISSUE_ID }}
+      HEAD_COMMIT_MESSAGE: ${{ steps.prepare_environment.outputs.HEAD_COMMIT_MESSAGE }}
+      ENVIRONMENT: ${{ steps.prepare_environment.outputs.ENVIRONMENT }}
+    steps:
+      - name: "Prepare environment"
+        id: prepare_environment
+        run: |
+          # Generate VARIABLES
+          ENVIRONMENT="${{ github.ref_name }}"
+          HEAD_COMMIT_MESSAGE="${{ github.event.head_commit.message }}"
+          HEAD_COMMIT_MESSAGE=${HEAD_COMMIT_MESSAGE//[^a-zA-Z0-9_ .]/}
+          SHA_SHORT=$(echo "${{ github.sha }}" | cut -c1-8)
+          ISSUE_ID=$(echo "${{ github.event.head_commit.message }}" | grep -m1 -Po "LMSDEV-[0-9]*" || true)
+
+          # Save them to OUTPUT
+          echo "SHA_SHORT=${SHA_SHORT}" >>  "${GITHUB_ENV}"
+          echo "ENVIRONMENT=${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+          echo "HEAD_COMMIT_MESSAGE=${HEAD_COMMIT_MESSAGE}" >> "$GITHUB_OUTPUT"
+          echo "SHA_SHORT=${SHA_SHORT}" >> "$GITHUB_OUTPUT"
+          echo "ISSUE_ID=${ISSUE_ID}" >> "$GITHUB_OUTPUT"
+
+      - name: "Generate Github App Token"
+        uses: Aprende-com/devops-workflows/actions/generate-github-token@main
+        id: app-token
+        with:
+          secret_key: ${{ secrets.DEVOPS_APP_SECRET_KEY }}
+          app_id: ${{ secrets.DEVOPS_APP_ID }}
+          repositories: "devops-workflows"
+
+      - uses: Aprende-com/devops-workflows/actions/slack-notify@main
+        if: failure()
+        with:
+          actor: "${{ github.actor }}"
+          title: "<https://github.com/${{ github.repository }}/commit/${{ env.SHA_SHORT }}|Deployment> to [${{ github.ref_name }}]: ${{ job.status }}"
+          status: "${{ job.status }}"
+          text: "See <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}|${{ github.workflow }} #${{ github.run_number }}> for more information"
+          
+  reusable-job:
+    uses: Aprende-com/devops-workflows/.github/workflows/single_plugin_pipeline_nonprod_reusable.yml@main
+    needs: branch_trigger
+    secrets: inherit
+    with:
+      repository: "${{ github.repository }}"
+      sha_short: "${{ needs.branch_trigger.outputs.SHA_SHORT }}"
+      head_commit_message: "${{ needs.branch_trigger.outputs.HEAD_COMMIT_MESSAGE }}"
+      actor: "${{ github.actor }}"
+      run_number: "${{ github.run_number }}"
+      run_id: "${{ github.run_id }}"
+      event_type: "plugin"
+      environment: "${{ needs.branch_trigger.outputs.ENVIRONMENT }}"
